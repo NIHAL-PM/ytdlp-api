@@ -1,10 +1,10 @@
 import sys
+import time
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 import yt_dlp
 import os
-import threading
-import time
+import schedule
 import uvicorn
 from dotenv import load_dotenv
 import mimetypes
@@ -26,23 +26,19 @@ ydl_opts = {
 
 
 def cleanup_videos():
-    while True:
-        for filename in os.listdir(VIDEO_DIR):
-            filepath = os.path.join(VIDEO_DIR, filename)
-            if os.path.isfile(filepath) and time.time() - os.path.getmtime(filepath) >= 3600:
-                print(f"Removing {filepath}")
-                sys.stdout.flush()
-                os.remove(filepath)
-        time.sleep(3600)  # Run the cleanup every hour
+    print("Cleaning up videos in honour of wasted 73 GB and 1 hour of D life...")
+    for filename in os.listdir(VIDEO_DIR):
+        file_path = os.path.join(VIDEO_DIR, filename)
+        try:
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+                print(f"Deleted {file_path}")
+        except Exception as e:
+            print(f"Error deleting {file_path}: {e}")
 
 
 if not os.path.exists(VIDEO_DIR):
     os.makedirs(VIDEO_DIR)
-
-# Start the cleanup thread
-cleanup_thread = threading.Thread(target=cleanup_videos)
-cleanup_thread.daemon = True
-cleanup_thread.start()
 
 
 @app.post("/get_video_url/")
@@ -75,4 +71,9 @@ if __name__ == "__main__":
     if not PUBLIC_URL:
         sys.exit("Error: PUBLIC_URL environment variable not set")
 
+    schedule.every().day.at("04:20", 'Europe/Kyiv').do(cleanup_videos)
     uvicorn.run(app, host=HOST, port=PORT)
+
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
