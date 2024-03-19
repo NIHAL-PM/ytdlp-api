@@ -51,7 +51,8 @@ async def get_video_url(youtube_url: str):
             video_filename = f"{video_id}.{video_ext}"
             video_path = os.path.join(VIDEO_DIR, video_filename)
             if os.path.exists(video_path):
-                return {"url": f"{PUBLIC_URL}/get_video/{video_filename}"}
+                return {"url": f"{PUBLIC_URL}/get_video/{video_filename}",
+                        "title": info['title']}
             else:
                 raise HTTPException(status_code=404, detail="Video not found")
     except Exception as e:
