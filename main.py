@@ -1,80 +1,86 @@
 import sys
-import time
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
-import yt_dlp
 import os
-import schedule
+import asyncio
+from urllib.parse import quote
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 import uvicorn
 from dotenv import load_dotenv
-import mimetypes
 
 load_dotenv()
 app = FastAPI()
 
-VIDEO_DIR = "downloaded_videos"
 HOST = "0.0.0.0"
 PORT = 1337
 PUBLIC_URL = os.getenv("PUBLIC_URL")
 
-ydl_opts = {
-    'format': 'best',
-    'quiet': True,
-    'outtmpl': f'{VIDEO_DIR}/%(id)s.%(ext)s',
-    'max_filesize': 50 * 1024 * 1024
-}
+async def stream_process_output(youtube_url: str):
+    """
+    Spawns yt-dlp as an async subprocess and streams the raw video binary chunks
+    directly from stdout, bypassing the server's hard drive entirely.
+    """
+    cmd = [
+        "yt-dlp",
+        "-f", "best",
+        "-o", "-",
+        "--quiet",
+        "--no-playlist",
+        youtube_url
+    ]
+    
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
 
-
-def cleanup_videos():
-    print("Cleaning up videos in honour of wasted 73 GB and 1 hour of D life...")
-    for filename in os.listdir(VIDEO_DIR):
-        file_path = os.path.join(VIDEO_DIR, filename)
-        try:
-            if os.path.isfile(file_path):
-                os.remove(file_path)
-                print(f"Deleted {file_path}")
-        except Exception as e:
-            print(f"Error deleting {file_path}: {e}")
-
-
-if not os.path.exists(VIDEO_DIR):
-    os.makedirs(VIDEO_DIR)
-
-
-@app.post("/get_video_url/")
-async def get_video_url(youtube_url: str):
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(youtube_url, download=True)
-            video_ext = info['ext']
-            video_id = info['id']
-            video_filename = f"{video_id}.{video_ext}"
-            video_path = os.path.join(VIDEO_DIR, video_filename)
-            if os.path.exists(video_path):
-                return {"url": f"{PUBLIC_URL}/get_video/{video_filename}",
-                        "title": info['title']}
-            else:
-                raise HTTPException(status_code=404, detail="Video not found")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        while True:
+            # Read chunks of data (64KB) as they stream in from YouTube
+            chunk = await process.stdout.read(64 * 1024)
+            if not chunk:
+                break
+            yield chunk
+    except asyncio.CancelledError:
+        # If the user cancels the download mid-way, terminate the subprocess immediately
+        try:
+            process.terminate()
+            await process.wait()
+        except ProcessLookupError:
+            pass
+        raise
+    finally:
+        # Clean up process resources when finished
+        if process.returncode is None:
+            try:
+                process.terminate()
+                await process.wait()
+            except ProcessLookupError:
+                pass
 
-
-@app.get("/get_video/{video_name}")
-async def get_video(video_name: str):
-    video_path = os.path.join(VIDEO_DIR, video_name)
-    if os.path.exists(video_path):
-        mime_type, _ = mimetypes.guess_type(video_path)
-        return FileResponse(video_path, media_type=mime_type)
-    else:
-        raise HTTPException(status_code=404, detail="Video not found")
+@app.get("/download")
+async def download_video(url: str, title: str = "video"):
+    if not url:
+        raise HTTPException(status_code=400, detail="Missing URL parameter")
+        
+    # URL-encode the title so spaces or special characters don't break the HTTP header
+    safe_filename = f"{quote(title)}.mp4"
+        
+    # Force the browser to trigger a "Save File" dialog instead of playing it
+    headers = {
+        "Content-Disposition": f'attachment; filename="{safe_filename}"',
+        "Cache-Control": "no-cache"
+    }
+        
+    return StreamingResponse(
+        stream_process_output(url),
+        media_type="application/octet-stream",
+        headers=headers
+    )
 
 if __name__ == "__main__":
     if not PUBLIC_URL:
         sys.exit("Error: PUBLIC_URL environment variable not set")
 
-    schedule.every().day.at("04:20", 'Europe/Kyiv').do(cleanup_videos)
+    # Clean execution block—no blocking scheduler loops needed anymore!
     uvicorn.run(app, host=HOST, port=PORT)
-
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
